@@ -1,0 +1,53 @@
+# === Python Cache ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.log
+
+# === Checkpoints & Model Weights ===
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# === Training / Experiment Logs ===
+logs/
+temp_*/
+runs/
+wandb/
+tensorboard/
+*.event*
+*.csv
+*.json
+
+# === Data / Large Artifacts ===
+data/
+datasets/
+*.zip
+*.tar
+*.npy
+*.npz
+
+# === Temporary / System Files ===
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+
+# === VSCode & IDE ===
+.vscode/
+.idea/
+
+# === Shell Run Outputs ===
+$RUN_DIR/
+*.sh~
+*.out
+*.err
+
+# === Generated Results or Figures ===
+results/
+outputs/
+plots/
+figures/
