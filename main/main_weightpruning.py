@@ -69,6 +69,7 @@ class WeightPruningExperiment:
         self.tensorboard_dir, self.main_writer = self.storage.setup_tensorboard(self.exp_dir)
         
         self.batch_size = args.batch_size
+        self.ft_batch_size = args.ft_batch_size
         self.num_workers = args.num_workers
         self.fine_tune_epochs = args.unlearn_epochs
         
@@ -254,6 +255,17 @@ class WeightPruningExperiment:
                         
                         self._write_tensorboard_summary(forget_key, strategy_name, result, experiment_step)
                         
+                        if 'error' not in result:
+                            # 儲存單一的詳細 JSON 檔案
+                            single_json_path = f"{self.exp_dir}/results/{forget_key}_{strategy_name}_result.json"
+                            
+                            # 這裡直接呼叫 self.storage.save_results_to_json
+                            self.storage.save_results_to_json(
+                                self.exp_dir, result, 
+                                f"{forget_key}_{strategy_name}_result.json"
+                            )
+                            self.logger.info(f"即時 JSON 結果已儲存: {single_json_path}")
+
                     except Exception as e:
                         error_msg = str(e)
                         all_results[forget_key][strategy_name] = {'error': error_msg}
@@ -487,7 +499,7 @@ class WeightPruningExperiment:
             mul = MachineUnlearning(
                 model_class=VisionTransformer,
                 model_args=self.model_args,
-                batch_size=self.batch_size,
+                batch_size=self.ft_batch_size, # 使用微調批次大小
                 device=self.device,
                 output_dir=temp_output_dir,
                 log_dir=gold_tb_dir,
@@ -616,6 +628,23 @@ class WeightPruningExperiment:
 
             except Exception as e:
                 self.logger.warning(f"診斷程序失敗: {e}")
+
+
+            mul.results['original_metrics'] = {'retain_acc': original_retain_acc, 'forget_acc': original_forget_acc}
+            mul.results['unlearned_metrics'] = {'retain_acc': unlearned_retain_acc, 'forget_acc': unlearned_forget_acc or 0}
+            mul.results['retrained_metrics'] = {'retain_acc': gs_retain_acc, 'forget_acc': gs_forget_acc or 0}
+            
+            mul.calculate_metrics()
+
+            # 建立一個統一的 unlearning_metrics 字典
+            unlearning_metrics = {
+                'forget_effectiveness': mul.results.get('forget_effect', 0),
+                'retain_preservation': mul.results.get('retain_effect', 0),
+                'mu_score': mul.results.get('MU_score', 0)
+            }
+            
+            # 將 enhanced_results (包含ZRF分數) 的內容合併進來
+            unlearning_metrics.update(enhanced_results)
 
             # 整理結果
             results = {
@@ -932,11 +961,12 @@ def main():
     parser.add_argument('--forget_class_counts', nargs='+', type=int, default=[10, 20, 30], 
                        help='批量測試的遺忘類別數')
     parser.add_argument('--strategies', nargs='+', 
-                       choices=['magnitude_reset', 'magnitude_zero_lock', 'gradient', 'fisher', 'all'], 
+                       choices=['magnitude_reset', 'magnitude_zero_lock', 'gradient', 'fisher', 'attention_head_reset', 'all'], 
                        default=['magnitude_reset'], help='測試策略')
     
     # 模型和訓練參數
     parser.add_argument('--batch_size', type=int, default=128, help='批次大小')
+    parser.add_argument('--ft_batch_size', type=int, default=None, help='修剪後微調的批次大小 (若不指定，則使用 --batch_size 的值)')
     parser.add_argument('--num_workers', type=int, default=4, help='數據載入線程數')
     parser.add_argument('--unlearn_epochs', type=int, default=20, help='修剪後微調的輪數 (fine_tune_epochs)')
 
@@ -988,7 +1018,9 @@ def main():
         args.run_mia = False
     if args.no_enhanced_eval:
         args.run_enhanced_eval = False
-    
+    if args.ft_batch_size is None:
+        args.ft_batch_size = args.batch_size
+
     print("🚀 WeightPruning 批量遺忘實驗")
     print(f"📊 測試類別數: {args.forget_class_counts}")
     print(f"🔧 測試策略: {args.strategies}")

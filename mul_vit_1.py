@@ -278,16 +278,15 @@ class MachineUnlearning:
         # 創建數據加載器
         num_workers = 8
         pin = True
-        persist = num_workers > 0
 
         self.retain_train_loader = DataLoader(self.retain_train_set, batch_size=self.batch_size, shuffle=True, 
-                                              num_workers=num_workers, pin_memory=pin, persistent_workers=persist)
+                                              num_workers=num_workers, pin_memory=pin, persistent_workers=True)
         self.forget_train_loader = DataLoader(self.forget_train_set, batch_size=self.batch_size, shuffle=True, 
-                                              num_workers=num_workers, pin_memory=pin, persistent_workers=persist)
+                                              num_workers=num_workers, pin_memory=pin, persistent_workers=True)
         self.retain_test_loader = DataLoader(self.retain_test_set, batch_size=self.batch_size, shuffle=False, 
-                                             num_workers=num_workers, pin_memory=pin, persistent_workers=persist)
+                                             num_workers=num_workers, pin_memory=pin, persistent_workers=True)
         self.forget_test_loader = DataLoader(self.forget_test_set, batch_size=self.batch_size, shuffle=False, 
-                                             num_workers=num_workers, pin_memory=pin, persistent_workers=persist)
+                                             num_workers=num_workers, pin_memory=pin, persistent_workers=True)
 
         print(f"數據準備完成:")
         print(f"  保留訓練集: {len(self.retain_train_set)} 樣本")
@@ -620,7 +619,7 @@ class MachineUnlearning:
         index = torch.randperm(batch_size, device=inputs.device)
 
         # 🛠️ 新增最小λ限制，避免過度混合
-        lam = max(lam, 0.8)  # 確保至少80%是原始圖像
+        # lam = max(lam, 0.8)  # 確保至少80%是原始圖像
 
         if use_cutmix:
             # cutmix：隨機矩形區塊交換
@@ -648,6 +647,7 @@ class MachineUnlearning:
                             use_mixup=False,
                             use_cutmix=False,
                             mix_alpha=0.2,
+                            label_smoothing=0.1,
                             use_logit_penalty=False,
                             experiment_writer=None):
         """
@@ -671,9 +671,9 @@ class MachineUnlearning:
         use_class_balance = bool(getattr(self, "gs_use_class_balance", False))
         if use_class_balance:
             cw = compute_class_weights_from_subset(self.retain_train_set, self.num_classes).to(self.device)
-            criterion = nn.CrossEntropyLoss(weight=cw, label_smoothing=0.1)
+            criterion = nn.CrossEntropyLoss(weight=cw, label_smoothing=label_smoothing)
         else:
-            criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+            criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
         # 3) Scheduler（支援 cosine_warmup / onecycle 需要 train_loader）
         scheduler = self.get_scheduler(
@@ -760,6 +760,9 @@ class MachineUnlearning:
 
             retain_acc = self._evaluate_retain(self.retrained_model)
 
+            # 給予中間結果回饋，GS 的 tuning 要用
+            print(f"INTERMEDIATE_ACC:{retain_acc:.4f} Epoch:{epoch+1}")
+
             # 以當前生效的權重（若有 EMA 即為 EMA 權重）判斷最佳，並保存「EMA 權重」版本
             if retain_acc > best_acc:
                 best_acc = retain_acc
@@ -806,6 +809,10 @@ class MachineUnlearning:
         self.results['retraining_time'] = end_time - start_time
         print(f"黃金標準模型訓練完成! 耗時: {self.results['retraining_time']:.2f} 秒")
 
+        if 'retrained_metrics' not in self.results:
+            self.results['retrained_metrics'] = {}
+        self.results['retrained_metrics']['retain_acc'] = best_acc
+        
         # 保存 GS 權重
         try:
             torch.save(self.retrained_model.state_dict(), f"{self.output_dir}/gold_standard_model.pth")

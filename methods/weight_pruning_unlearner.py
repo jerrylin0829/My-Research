@@ -46,6 +46,10 @@ class WeightPruningUnlearner(BaseUnlearner):
             fine_tune_epochs: 修剪後微調輪數
         """
         
+        def __init__(self, model, device):
+            super().__init__(model, device)
+            self.criterion = nn.CrossEntropyLoss()
+            
         print(f"開始權重修剪遺忘，策略: {prune_strategy}, 修剪比例: {prune_ratio}")
         print("保持原始 100 類分類頭，不進行類別映射")
         
@@ -57,6 +61,8 @@ class WeightPruningUnlearner(BaseUnlearner):
             self._gradient_based_pruning(retain_loader, forget_loader, prune_ratio, target_layers)
         elif prune_strategy == 'fisher':
             self._fisher_based_pruning(retain_loader, prune_ratio, target_layers)
+        elif prune_strategy == 'attention_head_reset':
+            self._attention_head_pruning(forget_loader, prune_ratio)    
         else:
             raise ValueError(f"不支援的修剪策略: {prune_strategy}")
         
@@ -216,6 +222,53 @@ class WeightPruningUnlearner(BaseUnlearner):
         
         print(f"總共修剪參數: {pruned_count:,}/{total_params:,} ({100*pruned_count/total_params:.1f}%)")
     
+    def _attention_head_pruning(self, forget_loader, prune_ratio):
+        """根據遺忘集梯度，修剪掉最重要的注意力頭"""
+        print("執行注意力頭剪枝...")
+        
+        # 1. 計算每個頭在遺忘集上的重要性
+        head_importance = self._compute_head_importance(forget_loader)
+        
+        if not head_importance:
+            print("警告：無法計算頭重要性，跳過剪枝。")
+            return
+            
+        # 2. 找到要修剪的頭
+        # 將字典轉換為 (score, layer_idx, head_idx) 的列表並排序
+        sorted_heads = sorted(
+            [(score, layer, head) for (layer, head), score in head_importance.items()], 
+            reverse=True # 分數越高的越相關，越應該被剪掉
+        )
+        
+        num_total_heads = self.model.depth * self.model.num_heads
+        num_to_prune = int(num_total_heads * prune_ratio)
+        
+        heads_to_prune = set()
+        for _, layer_idx, head_idx in sorted_heads[:num_to_prune]:
+            heads_to_prune.add((layer_idx, head_idx))
+            
+        print(f"總共 {num_total_heads} 個頭，將修剪 {num_to_prune} 個最重要的頭。")
+
+        # 3. 執行修剪 (將對應權重設為零)
+        num_heads = self.model.num_heads
+        head_dim = self.model.embed_dim // num_heads
+
+        with torch.no_grad():
+            for layer_idx, head_idx in heads_to_prune:
+                block = self.model.blocks[layer_idx]
+                
+                # 修剪 QKV 權重
+                qkv_weight = block.attn.qkv.weight
+                qkv_weight_reshaped = qkv_weight.view(3, num_heads, head_dim, -1)
+                qkv_weight_reshaped[:, head_idx, :, :] = 0.0
+                
+                # 修剪輸出投影權重
+                proj_weight = block.attn.proj.weight
+                proj_weight_reshaped = proj_weight.view(num_heads, head_dim, -1)
+                proj_weight_reshaped[head_idx, :, :] = 0.0
+        
+        print("注意力頭修剪完成。")
+
     def _compute_gradients(self, dataloader, data_type):
         """計算對特定數據集的梯度"""
         print(f"計算{data_type}的梯度...")
@@ -284,6 +337,56 @@ class WeightPruningUnlearner(BaseUnlearner):
             fisher_info[name] /= (batch_count * outputs.size(1))
         
         return fisher_info
+    
+    def _compute_head_importance(self, dataloader):
+        """計算每個注意力頭的重要性分數（基於梯度範數）"""
+        self.model.eval()
+        
+        # 初始化一個字典來累積每個頭的梯度
+        # 格式: {(layer_idx, head_idx): importance_score}
+        head_importance = {}
+
+        # 假設模型有 'depth' 和 'num_heads' 屬性
+        depth = self.model.depth
+        num_heads = self.model.num_heads
+        head_dim = self.model.embed_dim // num_heads
+
+        # 梯度計算迴圈
+        batch_count = 0
+        for inputs, labels in tqdm(dataloader, desc="計算頭重要性"):
+            if batch_count >= 5: # 用少量 batch 估算即可
+                break
+            
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
+            self.model.zero_grad()
+            outputs = self.model(inputs)
+            loss = self.criterion(outputs, labels)
+            loss.backward()
+
+            # 遍歷所有 Transformer Blocks
+            for i, block in enumerate(self.model.blocks):
+                qkv_grad = block.attn.qkv.weight.grad
+                if qkv_grad is not None:
+                    # qkv_grad shape: [3 * embed_dim, embed_dim]
+                    # 我們將它 reshape 來分離 Q, K, V 和不同的頭
+                    qkv_grad = qkv_grad.view(3, num_heads, head_dim, -1)
+                    
+                    # 計算每個頭的梯度 L2 範數
+                    for h in range(num_heads):
+                        # 將 Q, K, V 的梯度範數相加作為這個頭的重要性
+                        head_grad_norm = torch.norm(qkv_grad[:, h, :, :], p=2)
+                        
+                        if (i, h) not in head_importance:
+                            head_importance[(i, h)] = 0.0
+                        head_importance[(i, h)] += head_grad_norm.item()
+            
+            batch_count += 1
+        
+        # 平均重要性
+        for key in head_importance:
+            head_importance[key] /= max(1, batch_count)
+            
+        return head_importance
     
     def _should_prune_layer(self, layer_name, target_layers):
         """判斷是否應該修剪該層"""
@@ -534,4 +637,11 @@ class WeightPruningUnlearner(BaseUnlearner):
                 'target_layers': target_layers,
             }
         
+        # Attention Head Pruning strategies
+        for ratio in prune_ratios:
+            configs[f'attention_head_reset_{int(ratio*100)}%'] = {
+                'prune_ratio': ratio,
+                'prune_strategy': 'attention_head_reset',
+                'target_layers': target_layers, # 這個策略通常作用於所有 blocks
+            }
         return configs

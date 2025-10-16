@@ -150,7 +150,11 @@ class VisionTransformer(nn.Module):
                  num_heads=12, mlp_ratio=4., qkv_bias=True, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., norm_layer=None, is_LSA=False):
         super().__init__()
+        
         self.num_features = self.embed_dim = embed_dim
+        self.depth = depth         
+        self.num_heads = num_heads
+
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
 
         self.patch_embed = PatchEmbed(

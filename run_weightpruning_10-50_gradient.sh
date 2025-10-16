@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 ###############################################################################
 #  File   : run_weightpruning_10-50.sh
 #  Usage  : bash run_weightpruning_10-50.sh
@@ -38,7 +37,8 @@ for N in ${FORGET_COUNTS}; do
     --prune_ratios ${PRUNE_RATIOS} \
     --prune_target_layers "${TARGET_LAYERS}" \
     --batch_size 512 \
-    --unlearn_epochs 20 \
+    --finetune_batch_size 128 \
+    --unlearn_epochs 50 \
     --gs_epochs 300 \
     --gs_lr 4e-4 \
     --gs_min_lr 5e-5 \
@@ -48,7 +48,8 @@ for N in ${FORGET_COUNTS}; do
     --gs_weight_decay 0.05 \
     --run_enhanced_eval \
     --no_mia \
-    --use_mixup
+    --use_mixup \
+    --mix_alpha 0.1 \
     2>&1 | tee "${OUTPUT_ROOT}/forget${N}_run.log"
 
   echo "✅ 完成 WeightPruning N=${N}，結果已寫入 ${OUTPUT_ROOT}/forget${N}"

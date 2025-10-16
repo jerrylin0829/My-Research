@@ -8,9 +8,9 @@ set -euo pipefail
 # --- 1. 定義實驗的關鍵元信息 ---
 METHOD="WeightPruning"
 FORGET_COUNTS="10 20"
-STRATEGY="magnitude_reset"
+STRATEGY="attention_head_reset"
 PRUNE_RATIOS="0.7 0.9 0.95"
-TARGET_LAYERS="head,late_blocks"
+TARGET_LAYERS="all_blocks"
 
 # --- 2. 組合出描述性的實驗名稱 ---
 NOW=$(date +%Y%m%d-%H%M%S)
